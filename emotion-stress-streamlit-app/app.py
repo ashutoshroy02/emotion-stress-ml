@@ -1,15 +1,11 @@
 import streamlit as st
 import torch
-import numpy as np
+import torchaudio
 import tempfile
 import io
 
-import soundfile as sf
-import librosa
-
 from transformers import Wav2Vec2Processor
 from huggingface_hub import hf_hub_download
-from pydub import AudioSegment
 from streamlit_mic_recorder import mic_recorder
 
 from model import Wav2Vec2_LSTM_MultiTask
@@ -23,10 +19,10 @@ TARGET_SR = 16000
 
 st.set_page_config(page_title="Emotion & Stress Detection", layout="centered")
 st.title("🎤 Emotion & Stress Detection")
-st.write("Record live audio or upload any audio file")
+st.write("Upload audio or record live voice")
 
 # =====================================================
-# LOAD MODEL
+# LOAD MODEL (CACHED)
 # =====================================================
 @st.cache_resource
 def load_model():
@@ -53,45 +49,42 @@ def load_model():
 with st.spinner("Loading model..."):
     model, processor, id2emotion = load_model()
 
-st.success("Model loaded successfully")
+st.success("Model loaded")
 
 # =====================================================
-# AUDIO UTILITIES (ROBUST)
+# AUDIO LOADING (TORCHAUDIO ONLY)
 # =====================================================
-def bytes_to_wav_file(audio_bytes):
+def load_audio_any(source):
     """
-    Converts ANY audio bytes to a valid WAV file (mono, 16kHz)
+    source: file path OR bytes
+    returns: mono waveform @ 16kHz
     """
-    audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
-    audio = audio.set_channels(1).set_frame_rate(TARGET_SR)
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    audio.export(tmp.name, format="wav")
-    tmp.close()
+    if isinstance(source, bytes):
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(source)
+            source = f.name
 
-    return tmp.name
+    waveform, sr = torchaudio.load(source)
 
+    # stereo -> mono
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
 
-def load_audio_safe(wav_path):
-    """
-    Guaranteed-safe audio loader for Streamlit Cloud
-    """
-    audio, sr = sf.read(wav_path, always_2d=False)
-
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
-
+    # resample
     if sr != TARGET_SR:
-        audio = librosa.resample(audio, orig_sr=sr, target_sr=TARGET_SR)
+        waveform = torchaudio.functional.resample(
+            waveform, sr, TARGET_SR
+        )
 
-    return audio.astype(np.float32)
+    return waveform.squeeze(0)
 
 
-def predict_from_audio(wav_path):
-    audio = load_audio_safe(wav_path)
+def predict_audio(source):
+    waveform = load_audio_any(source)
 
     inputs = processor(
-        audio,
+        waveform.numpy(),
         sampling_rate=TARGET_SR,
         return_tensors="pt"
     ).input_values
@@ -110,48 +103,43 @@ def predict_from_audio(wav_path):
 tab1, tab2 = st.tabs(["🎙️ Live Record", "📁 Upload Audio"])
 
 # -------------------------
-# LIVE RECORDING
+# LIVE MIC
 # -------------------------
 with tab1:
-    st.subheader("🎙️ Live Voice Recording")
+    st.subheader("🎙️ Live Recording")
 
     audio_data = mic_recorder(
-        start_prompt="▶️ Start Recording",
-        stop_prompt="⏹️ Stop Recording",
-        just_once=True,
-        use_container_width=True
+        start_prompt="▶️ Start",
+        stop_prompt="⏹️ Stop",
+        just_once=True
     )
 
     if audio_data and "bytes" in audio_data:
         st.audio(audio_data["bytes"])
 
-        with st.spinner("Converting & analyzing..."):
-            # ✅ ALWAYS convert mic bytes via pydub
-            wav_path = bytes_to_wav_file(audio_data["bytes"])
-            emotion, stress = predict_from_audio(wav_path)
+        with st.spinner("Analyzing..."):
+            emotion, stress = predict_audio(audio_data["bytes"])
 
         st.subheader("🧠 Prediction")
         st.write(f"**Emotion:** {emotion}")
         st.write(f"**Stress Level:** {stress}")
 
-
 # -------------------------
 # FILE UPLOAD
 # -------------------------
 with tab2:
-    st.subheader("📁 Upload Audio File")
+    st.subheader("📁 Upload Audio")
 
-    uploaded_file = st.file_uploader(
-        "Upload audio (.wav, .mp3, .m4a, .flac, .webm)",
-        type=["wav", "mp3", "m4a", "flac", "webm"]
+    uploaded = st.file_uploader(
+        "Upload audio file",
+        type=["wav", "mp3", "m4a", "flac"]
     )
 
-    if uploaded_file:
-        st.audio(uploaded_file)
+    if uploaded:
+        st.audio(uploaded)
 
-        with st.spinner("Converting & analyzing..."):
-            wav_path = bytes_to_wav_file(uploaded_file.read())
-            emotion, stress = predict_from_audio(wav_path)
+        with st.spinner("Analyzing..."):
+            emotion, stress = predict_audio(uploaded.read())
 
         st.subheader("🧠 Prediction")
         st.write(f"**Emotion:** {emotion}")
