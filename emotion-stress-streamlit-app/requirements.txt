@@ -1,0 +1,7 @@
+streamlit
+torch
+transformers
+librosa
+soundfile
+numpy
+huggingface_hub
