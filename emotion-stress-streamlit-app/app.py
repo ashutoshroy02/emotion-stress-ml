@@ -2,6 +2,7 @@ import streamlit as st
 import torch
 import numpy as np
 import tempfile
+import io
 
 import soundfile as sf
 import librosa
@@ -20,16 +21,12 @@ MODEL_REPO = "ashutoshroy02/hybrid-wave2vec-LSTM-emotion-stress-RAVDESS"
 MODEL_FILE = "model.pt"
 TARGET_SR = 16000
 
-st.set_page_config(
-    page_title="Emotion & Stress Detection",
-    layout="centered"
-)
-
+st.set_page_config(page_title="Emotion & Stress Detection", layout="centered")
 st.title("🎤 Emotion & Stress Detection")
 st.write("Record live audio or upload any audio file")
 
 # =====================================================
-# LOAD MODEL (CACHED)
+# LOAD MODEL
 # =====================================================
 @st.cache_resource
 def load_model():
@@ -44,9 +41,7 @@ def load_model():
     id2emotion = {v: k for k, v in emotion2id.items()}
     num_emotions = checkpoint["num_emotions"]
 
-    processor = Wav2Vec2Processor.from_pretrained(
-        "facebook/wav2vec2-base"
-    )
+    processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base")
 
     model = Wav2Vec2_LSTM_MultiTask(num_emotions)
     model.load_state_dict(checkpoint["model_state"])
@@ -61,39 +56,35 @@ with st.spinner("Loading model..."):
 st.success("Model loaded successfully")
 
 # =====================================================
-# AUDIO UTILITIES (STREAMLIT CLOUD SAFE)
+# AUDIO UTILITIES (ROBUST)
 # =====================================================
-def convert_any_audio_to_wav(audio_bytes):
+def bytes_to_wav_file(audio_bytes):
     """
-    Converts any audio format (mp3, m4a, webm, wav)
-    to WAV (mono, 16kHz)
+    Converts ANY audio bytes to a valid WAV file (mono, 16kHz)
     """
-    audio = AudioSegment.from_file(audio_bytes)
+    audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
     audio = audio.set_channels(1).set_frame_rate(TARGET_SR)
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
     audio.export(tmp.name, format="wav")
+    tmp.close()
+
     return tmp.name
 
 
 def load_audio_safe(wav_path):
     """
-    SAFE audio loading for Streamlit Cloud
-    (avoids audioread backend issue)
+    Guaranteed-safe audio loader for Streamlit Cloud
     """
-    audio, sr = sf.read(wav_path)
+    audio, sr = sf.read(wav_path, always_2d=False)
 
-    # stereo -> mono
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
 
-    # resample if needed
     if sr != TARGET_SR:
-        audio = librosa.resample(
-            audio, orig_sr=sr, target_sr=TARGET_SR
-        )
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=TARGET_SR)
 
-    return audio
+    return audio.astype(np.float32)
 
 
 def predict_from_audio(wav_path):
@@ -131,9 +122,10 @@ with tab1:
         use_container_width=True
     )
 
-    if audio_data:
+    if audio_data and "bytes" in audio_data:
         st.audio(audio_data["bytes"])
 
+        # mic recorder already gives WAV bytes → save directly
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
             f.write(audio_data["bytes"])
             wav_path = f.name
@@ -160,7 +152,7 @@ with tab2:
         st.audio(uploaded_file)
 
         with st.spinner("Converting & analyzing..."):
-            wav_path = convert_any_audio_to_wav(uploaded_file)
+            wav_path = bytes_to_wav_file(uploaded_file.read())
             emotion, stress = predict_from_audio(wav_path)
 
         st.subheader("🧠 Prediction")
