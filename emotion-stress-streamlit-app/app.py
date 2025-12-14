@@ -1,11 +1,15 @@
 import streamlit as st
 import torch
-import torchaudio
+import numpy as np
 import tempfile
 import io
 
+from scipy.io import wavfile
+from scipy.signal import resample
+
 from transformers import Wav2Vec2Processor
 from huggingface_hub import hf_hub_download
+from pydub import AudioSegment
 from streamlit_mic_recorder import mic_recorder
 
 from model import Wav2Vec2_LSTM_MultiTask
@@ -22,7 +26,7 @@ st.title("🎤 Emotion & Stress Detection")
 st.write("Upload audio or record live voice")
 
 # =====================================================
-# LOAD MODEL (CACHED)
+# LOAD MODEL
 # =====================================================
 @st.cache_resource
 def load_model():
@@ -52,39 +56,47 @@ with st.spinner("Loading model..."):
 st.success("Model loaded")
 
 # =====================================================
-# AUDIO LOADING (TORCHAUDIO ONLY)
+# AUDIO UTILITIES (NO BACKENDS)
 # =====================================================
-def load_audio_any(source):
+def bytes_to_valid_wav(audio_bytes):
     """
-    source: file path OR bytes
-    returns: mono waveform @ 16kHz
+    Decode ANY audio → valid WAV (mono, 16kHz)
     """
+    audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
+    audio = audio.set_channels(1).set_frame_rate(TARGET_SR)
 
-    if isinstance(source, bytes):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            f.write(source)
-            source = f.name
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    audio.export(tmp.name, format="wav")
+    tmp.close()
 
-    waveform, sr = torchaudio.load(source)
+    return tmp.name
 
-    # stereo -> mono
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
+
+def load_wav_scipy(wav_path):
+    sr, audio = wavfile.read(wav_path)
+
+    # int → float
+    if audio.dtype != np.float32:
+        audio = audio.astype(np.float32) / np.max(np.abs(audio))
+
+    # stereo → mono
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
 
     # resample
     if sr != TARGET_SR:
-        waveform = torchaudio.functional.resample(
-            waveform, sr, TARGET_SR
-        )
+        n_samples = int(len(audio) * TARGET_SR / sr)
+        audio = resample(audio, n_samples)
 
-    return waveform.squeeze(0)
+    return audio
 
 
-def predict_audio(source):
-    waveform = load_audio_any(source)
+def predict_audio(audio_bytes):
+    wav_path = bytes_to_valid_wav(audio_bytes)
+    audio = load_wav_scipy(wav_path)
 
     inputs = processor(
-        waveform.numpy(),
+        audio,
         sampling_rate=TARGET_SR,
         return_tensors="pt"
     ).input_values
@@ -132,7 +144,7 @@ with tab2:
 
     uploaded = st.file_uploader(
         "Upload audio file",
-        type=["wav", "mp3", "m4a", "flac"]
+        type=["wav", "mp3", "m4a", "flac", "webm"]
     )
 
     if uploaded:
