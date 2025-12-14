@@ -125,17 +125,15 @@ with tab1:
     if audio_data and "bytes" in audio_data:
         st.audio(audio_data["bytes"])
 
-        # mic recorder already gives WAV bytes → save directly
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-            f.write(audio_data["bytes"])
-            wav_path = f.name
-
-        with st.spinner("Analyzing..."):
+        with st.spinner("Converting & analyzing..."):
+            # ✅ ALWAYS convert mic bytes via pydub
+            wav_path = bytes_to_wav_file(audio_data["bytes"])
             emotion, stress = predict_from_audio(wav_path)
 
         st.subheader("🧠 Prediction")
         st.write(f"**Emotion:** {emotion}")
         st.write(f"**Stress Level:** {stress}")
+
 
 # -------------------------
 # FILE UPLOAD
