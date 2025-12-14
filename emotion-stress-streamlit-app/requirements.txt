@@ -8,3 +8,11 @@ huggingface_hub
 pydub
 streamlit-mic-recorder
 ffmpeg-python
+streamlit
+torch
+torchaudio
+transformers
+huggingface_hub
+streamlit-mic-recorder
+numpy
+
